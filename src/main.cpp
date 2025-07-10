@@ -1,27 +1,10 @@
-#include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WebServer.h>
 
-#define PART_BOUNDARY "123456789000000000000987654321"
-
-static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
-static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
-static const char* _STREAM_PART = "Content-Type: %s\r\nContent-Length: %u\r\n\r\n";
-
-
 // ====== WiFi Credentials ======
 const char* ssid = "YOUR_SSID";
 const char* password = "YOUR_PASSWORD";
-
-// ====== Motor Pins ======
-#define MOTOR_A1 12
-#define MOTOR_A2 13
-#define MOTOR_B1 14
-#define MOTOR_B2 15
-
-// ====== Global Flags ======
-bool drivingEnabled = false;
 
 // ====== Camera Pins (AI Thinker) ======
 #define PWDN_GPIO_NUM    -1
@@ -41,13 +24,28 @@ bool drivingEnabled = false;
 #define HREF_GPIO_NUM    23
 #define PCLK_GPIO_NUM    22
 
+// ====== Motor Control Pins ======
+#define MOTOR_A1 12
+#define MOTOR_A2 13
+#define MOTOR_B1 14
+#define MOTOR_B2 15
+
+// ====== HTTP Stream Constants ======
+#define PART_BOUNDARY "123456789000000000000987654321"
+static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char* _STREAM_PART = "Content-Type: %s\r\nContent-Length: %u\r\n\r\n";
+
+// ====== Server and Mode ======
 WebServer server(80);
+bool autoMode = false;
 
 void setupMotors() {
   pinMode(MOTOR_A1, OUTPUT);
   pinMode(MOTOR_A2, OUTPUT);
   pinMode(MOTOR_B1, OUTPUT);
   pinMode(MOTOR_B2, OUTPUT);
+  stopMotors();
 }
 
 void moveForward() {
@@ -56,21 +54,24 @@ void moveForward() {
   digitalWrite(MOTOR_B1, HIGH);
   digitalWrite(MOTOR_B2, LOW);
 }
-
+void moveBackward() {
+  digitalWrite(MOTOR_A1, LOW);
+  digitalWrite(MOTOR_A2, HIGH);
+  digitalWrite(MOTOR_B1, LOW);
+  digitalWrite(MOTOR_B2, HIGH);
+}
 void turnLeft() {
   digitalWrite(MOTOR_A1, LOW);
   digitalWrite(MOTOR_A2, HIGH);
   digitalWrite(MOTOR_B1, HIGH);
   digitalWrite(MOTOR_B2, LOW);
 }
-
 void turnRight() {
   digitalWrite(MOTOR_A1, HIGH);
   digitalWrite(MOTOR_A2, LOW);
   digitalWrite(MOTOR_B1, LOW);
   digitalWrite(MOTOR_B2, HIGH);
 }
-
 void stopMotors() {
   digitalWrite(MOTOR_A1, LOW);
   digitalWrite(MOTOR_A2, LOW);
@@ -78,29 +79,101 @@ void stopMotors() {
   digitalWrite(MOTOR_B2, LOW);
 }
 
+// ====== Web Interface ======
 void handleRoot() {
   server.send(200, "text/html", R"rawliteral(
     <html>
-    <head><title>ESP32-CAM Car</title></head>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-CAM Joystick</title>
+    <style>
+      body { font-family: sans-serif; text-align: center; }
+      button { font-size: 18px; margin: 10px; padding: 10px 20px; }
+      canvas { touch-action: none; border: 1px solid #888; }
+    </style>
+    </head>
     <body>
-    <h2>ESP32-CAM Obstacle Avoidance</h2>
-    <p><a href="/toggle"><button>Toggle Auto-Drive</button></a></p>
-    <p>Status: <b>)rawliteral" + String(drivingEnabled ? "DRIVING" : "STOPPED") + R"rawliteral(</b></p>
-    <img src="http://" + String(WiFi.localIP().toString()) + ":81/stream" width="320">
+    <h2>ESP32-CAM Robot Control</h2>
+    <p><img src="/stream" width="320"></p>
+    <p><button onclick="toggleMode()">Toggle Mode (Now: <span id='mode'>MANUAL</span>)</button></p>
+    <canvas id="joystick" width="200" height="200"></canvas>
+    <script>
+    let autoMode = false;
+    const modeLabel = document.getElementById("mode");
+    const joy = document.getElementById("joystick");
+    const ctx = joy.getContext("2d");
+
+    function toggleMode() {
+      autoMode = !autoMode;
+      fetch("/mode?value=" + (autoMode ? "auto" : "manual"));
+      modeLabel.textContent = autoMode ? "AUTO" : "MANUAL";
+    }
+
+    function send(dir) {
+      if (!autoMode) fetch("/control?dir=" + dir);
+    }
+
+    function drawJoystick(x, y) {
+      ctx.clearRect(0, 0, 200, 200);
+      ctx.beginPath();
+      ctx.arc(100, 100, 80, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, 15, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
+    joy.addEventListener("touchmove", function(e) {
+      const touch = e.touches[0];
+      const rect = joy.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      drawJoystick(x, y);
+      let dx = x - 100;
+      let dy = y - 100;
+
+      if (Math.abs(dy) > Math.abs(dx)) {
+        if (dy < -30) send("forward");
+        else if (dy > 30) send("backward");
+        else send("stop");
+      } else {
+        if (dx > 30) send("right");
+        else if (dx < -30) send("left");
+        else send("stop");
+      }
+    }, false);
+    joy.addEventListener("touchend", () => { drawJoystick(100,100); send("stop"); });
+
+    drawJoystick(100, 100);
+    </script>
     </body></html>
   )rawliteral");
 }
 
-void handleToggle() {
-  drivingEnabled = !drivingEnabled;
-  stopMotors();
-  handleRoot();
+void handleControl() {
+  if (!server.hasArg("dir")) return server.send(400, "text/plain", "Missing dir");
+  String dir = server.arg("dir");
+  if (autoMode) return;
+
+  if (dir == "forward") moveForward();
+  else if (dir == "backward") moveBackward();
+  else if (dir == "left") turnLeft();
+  else if (dir == "right") turnRight();
+  else stopMotors();
+
+  server.send(200, "text/plain", "OK");
 }
 
-#include "esp_http_server.h"
+void handleMode() {
+  if (!server.hasArg("value")) return server.send(400, "text/plain", "Missing value");
+  autoMode = server.arg("value") == "auto";
+  stopMotors();
+  server.send(200, "text/plain", "Mode set");
+}
 
+// ====== MJPEG Stream ======
+#include "esp_http_server.h"
 httpd_handle_t stream_httpd = NULL;
-httpd_handle_t camera_httpd = NULL;
 
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
@@ -116,11 +189,11 @@ static esp_err_t stream_handler(httpd_req_t *req) {
       continue;
     }
 
-    res = httpd_resp_send_chunk(req, (const char *)_STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
     if (res == ESP_OK) {
       char header[128];
-      size_t hlen = snprintf(header, sizeof(header), _STREAM_PART, "image/jpeg", fb->len);
-      res = httpd_resp_send_chunk(req, header, hlen);
+      int len = snprintf(header, 128, _STREAM_PART, "image/jpeg", fb->len);
+      res = httpd_resp_send_chunk(req, header, len);
     }
 
     if (res == ESP_OK) {
@@ -129,7 +202,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
     esp_camera_fb_return(fb);
     if (res != ESP_OK) break;
-    delay(30);
+    delay(50);
   }
 
   return res;
@@ -137,14 +210,14 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  httpd_start(&camera_httpd, &config);
-  httpd_uri_t uri_stream = {
+  httpd_start(&stream_httpd, &config);
+  httpd_uri_t stream_uri = {
     .uri       = "/stream",
     .method    = HTTP_GET,
     .handler   = stream_handler,
     .user_ctx  = NULL
   };
-  httpd_register_uri_handler(camera_httpd, &uri_stream);
+  httpd_register_uri_handler(stream_httpd, &stream_uri);
 }
 
 void setupCamera() {
@@ -168,8 +241,8 @@ void setupCamera() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_GRAYSCALE;
-  config.frame_size = FRAMESIZE_96X96;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;
   config.fb_count = 1;
 
   esp_camera_init(&config);
@@ -185,53 +258,39 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected");
 
   server.on("/", handleRoot);
-  server.on("/toggle", handleToggle);
+  server.on("/control", handleControl);
+  server.on("/mode", handleMode);
   server.begin();
   startCameraServer();
+
+  Serial.println("\nReady. IP address: " + WiFi.localIP().toString());
 }
 
 void loop() {
   server.handleClient();
 
-  if (!drivingEnabled) {
-    stopMotors();
-    delay(200);
-    return;
-  }
+  if (autoMode) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) return;
 
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) return;
-
-  int darkLeft = 0, darkRight = 0;
-  uint8_t *gray = fb->buf;
-  int width = fb->width, height = fb->height;
-
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      uint8_t pixel = gray[y * width + x];
-      if (pixel < 60) {
-        if (x < width / 2) darkLeft++;
-        else darkRight++;
+    int left = 0, right = 0;
+    for (int i = 0; i < fb->len; i += 2) {
+      if (fb->buf[i] < 60) {
+        if (i % fb->width < fb->width / 2) left++;
+        else right++;
       }
     }
-  }
-  esp_camera_fb_return(fb);
+    esp_camera_fb_return(fb);
 
-  if (darkLeft > 300 && darkRight > 300) {
-    stopMotors();
-    delay(300);
-    turnRight();
-    delay(400);
-  } else if (darkLeft > darkRight + 100) {
-    turnRight();
-  } else if (darkRight > darkLeft + 100) {
-    turnLeft();
-  } else {
-    moveForward();
-  }
+    if (left > 300 && right > 300) {
+      stopMotors(); delay(200);
+      turnRight(); delay(300);
+    } else if (left > right + 100) turnRight();
+    else if (right > left + 100) turnLeft();
+    else moveForward();
 
-  delay(100);
+    delay(100);
+  }
 }
