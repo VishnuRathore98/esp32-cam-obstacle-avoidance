@@ -3,8 +3,8 @@
 #include <WebServer.h>
 
 // ====== WiFi Credentials ======
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+const char* ssid = "Vivo v 27";
+const char* password = "vikasmali";
 
 // ====== Camera Pins (AI Thinker) ======
 #define PWDN_GPIO_NUM    -1
@@ -40,7 +40,20 @@ static const char* _STREAM_PART = "Content-Type: %s\r\nContent-Length: %u\r\n\r\
 WebServer server(80);
 bool autoMode = false;
 
-void setupMotors() {
+void stopMotors();
+void setupMotors();
+void moveForward();
+void moveBackward();
+void turnLeft();
+void turnRight();
+void handleRoot();
+void handleControl();
+void handleMode();
+static esp_err_t stream_handler();
+void startCameraServer();
+void setupCamera();
+
+void setupMotors()   {
   pinMode(MOTOR_A1, OUTPUT);
   pinMode(MOTOR_A2, OUTPUT);
   pinMode(MOTOR_B1, OUTPUT);
@@ -48,31 +61,31 @@ void setupMotors() {
   stopMotors();
 }
 
-void moveForward() {
+void moveForward()   {
   digitalWrite(MOTOR_A1, HIGH);
   digitalWrite(MOTOR_A2, LOW);
   digitalWrite(MOTOR_B1, HIGH);
   digitalWrite(MOTOR_B2, LOW);
 }
-void moveBackward() {
+void moveBackward()  {
   digitalWrite(MOTOR_A1, LOW);
   digitalWrite(MOTOR_A2, HIGH);
   digitalWrite(MOTOR_B1, LOW);
   digitalWrite(MOTOR_B2, HIGH);
 }
-void turnLeft() {
+void turnLeft()      {
   digitalWrite(MOTOR_A1, LOW);
   digitalWrite(MOTOR_A2, HIGH);
   digitalWrite(MOTOR_B1, HIGH);
   digitalWrite(MOTOR_B2, LOW);
 }
-void turnRight() {
+void turnRight()     {
   digitalWrite(MOTOR_A1, HIGH);
   digitalWrite(MOTOR_A2, LOW);
   digitalWrite(MOTOR_B1, LOW);
   digitalWrite(MOTOR_B2, HIGH);
 }
-void stopMotors() {
+void stopMotors()    {
   digitalWrite(MOTOR_A1, LOW);
   digitalWrite(MOTOR_A2, LOW);
   digitalWrite(MOTOR_B1, LOW);
@@ -80,7 +93,7 @@ void stopMotors() {
 }
 
 // ====== Web Interface ======
-void handleRoot() {
+void handleRoot()    {
   server.send(200, "text/html", R"rawliteral(
     <html>
     <head>
